@@ -719,6 +719,253 @@ elif page == "🔮  Live Prediction":
             </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
+
+        # ════════════════════════════════════════════════
+        # FEATURE INFLUENCE SECTION
+        # ════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown('<div class="section-title">🔬 What Influenced This Prediction?</div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#8B949E !important;font-size:0.92rem;margin-bottom:16px'>"
+            "Each chart below shows which features <b style='color:#FF6B6B'>pushed toward Disease</b> "
+            "or <b style='color:#56D364'>pushed away from Disease</b> for this specific patient.</p>",
+            unsafe_allow_html=True
+        )
+
+        feature_names = list(X.columns)
+        friendly = {
+            'age':'Age','sex':'Sex','cp':'Chest Pain Type',
+            'trestbps':'Resting BP','chol':'Cholesterol','fbs':'Fasting Blood Sugar',
+            'restecg':'Resting ECG','thalach':'Max Heart Rate','exang':'Exercise Angina',
+            'oldpeak':'ST Depression','slope':'ST Slope','ca':'Major Vessels','thal':'Thalassemia'
+        }
+
+        inf1, inf2, inf3 = st.tabs(["🟢 Logistic Regression", "🟠 Naive Bayes", "🔵 KNN"])
+
+        # ── Tab 1: Logistic Regression — coef * scaled_value ──────────────────
+        with inf1:
+            st.markdown(
+                "<p style='color:#C9D1D9 !important;font-size:0.88rem'>"
+                "Logistic Regression assigns a <b>weight (coefficient)</b> to each feature during training. "
+                "Multiplying that weight by the patient's scaled value gives the <b>exact contribution</b> "
+                "of each feature to the final prediction score. "
+                "🔴 Red = pushed toward disease &nbsp;|&nbsp; 🟢 Green = pushed away from disease.</p>",
+                unsafe_allow_html=True
+            )
+            lr_contrib = lr.coef_[0] * patient_scaled[0]
+            contrib_df = pd.DataFrame({
+                'Feature':      [friendly[f] for f in feature_names],
+                'Contribution': lr_contrib
+            }).sort_values('Contribution', ascending=True)
+
+            fig, ax = plt.subplots(figsize=(9, 5))
+            fig.patch.set_facecolor('#161B22')
+            ax.set_facecolor('#161B22')
+            colors = ['#F44336' if v > 0 else '#4CAF50' for v in contrib_df['Contribution']]
+            bars = ax.barh(contrib_df['Feature'], contrib_df['Contribution'],
+                           color=colors, edgecolor='none', height=0.6)
+            ax.axvline(0, color='#8B949E', linewidth=1.2, linestyle='--')
+            for bar, val in zip(bars, contrib_df['Contribution']):
+                xpos = val + 0.005 if val >= 0 else val - 0.005
+                ha   = 'left'       if val >= 0 else 'right'
+                ax.text(xpos, bar.get_y()+bar.get_height()/2,
+                        f'{val:+.3f}', va='center', ha=ha,
+                        fontsize=8, color='white', fontweight='600')
+            ax.set_xlabel('Contribution to Disease Score', color='#8B949E', fontsize=10)
+            ax.set_title('Logistic Regression — Feature Contribution per Feature',
+                         color='#7EB3FF', fontweight='bold', fontsize=12, pad=12)
+            ax.tick_params(colors='#C9D1D9', labelsize=9)
+            ax.spines['bottom'].set_color('#30363D')
+            ax.spines['left'].set_color('#30363D')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            fig.tight_layout()
+            st.pyplot(fig); plt.close()
+
+            # Top 3 influencers callout
+            top3 = contrib_df.iloc[-3:][::-1]
+            bot3 = contrib_df.iloc[:3]
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(
+                    "<div style='background:#2D1515 !important;border-left:4px solid #F44336;"
+                    "border-radius:8px;padding:12px 16px'>"
+                    "<div style='color:#FF6B6B !important;font-weight:700;margin-bottom:6px'>"
+                    "🔴 Top 3 — Pushed Toward Disease</div>" +
+                    "".join([f"<div style='color:#E6EDF3 !important;font-size:0.88rem;padding:2px 0'>"
+                             f"<b>{r['Feature']}</b>: {r['Contribution']:+.3f}</div>"
+                             for _, r in top3.iterrows()]) +
+                    "</div>", unsafe_allow_html=True)
+            with col_b:
+                st.markdown(
+                    "<div style='background:#0D2016 !important;border-left:4px solid #4CAF50;"
+                    "border-radius:8px;padding:12px 16px'>"
+                    "<div style='color:#56D364 !important;font-weight:700;margin-bottom:6px'>"
+                    "🟢 Top 3 — Pushed Away from Disease</div>" +
+                    "".join([f"<div style='color:#E6EDF3 !important;font-size:0.88rem;padding:2px 0'>"
+                             f"<b>{r['Feature']}</b>: {r['Contribution']:+.3f}</div>"
+                             for _, r in bot3.iterrows()]) +
+                    "</div>", unsafe_allow_html=True)
+
+        # ── Tab 2: Naive Bayes — log likelihood ratio ──────────────────────────
+        with inf2:
+            st.markdown(
+                "<p style='color:#C9D1D9 !important;font-size:0.88rem'>"
+                "Naive Bayes works by computing <b>P(feature | Disease)</b> vs <b>P(feature | No Disease)</b> "
+                "for each feature independently. The <b>log likelihood ratio</b> shows how much each feature "
+                "favours the disease class over the no-disease class for this patient. "
+                "🔴 Positive = evidence for disease &nbsp;|&nbsp; 🟢 Negative = evidence against disease.</p>",
+                unsafe_allow_html=True
+            )
+            # log P(x|disease) - log P(x|no disease) per feature
+            from scipy.stats import norm as sp_norm
+            nb_llr = []
+            for i, feat in enumerate(feature_names):
+                val = patient_scaled[0][i]
+                # class 1 = disease, class 0 = no disease
+                mu1, sig1 = nb.theta_[1][i], np.sqrt(nb.var_[1][i])
+                mu0, sig0 = nb.theta_[0][i], np.sqrt(nb.var_[0][i])
+                log_p1 = sp_norm.logpdf(val, mu1, sig1)
+                log_p0 = sp_norm.logpdf(val, mu0, sig0)
+                nb_llr.append(log_p1 - log_p0)
+
+            nb_df = pd.DataFrame({
+                'Feature': [friendly[f] for f in feature_names],
+                'Log Likelihood Ratio': nb_llr
+            }).sort_values('Log Likelihood Ratio', ascending=True)
+
+            fig, ax = plt.subplots(figsize=(9, 5))
+            fig.patch.set_facecolor('#161B22')
+            ax.set_facecolor('#161B22')
+            colors = ['#F44336' if v > 0 else '#4CAF50' for v in nb_df['Log Likelihood Ratio']]
+            bars = ax.barh(nb_df['Feature'], nb_df['Log Likelihood Ratio'],
+                           color=colors, edgecolor='none', height=0.6)
+            ax.axvline(0, color='#8B949E', linewidth=1.2, linestyle='--')
+            for bar, val in zip(bars, nb_df['Log Likelihood Ratio']):
+                xpos = val + 0.05 if val >= 0 else val - 0.05
+                ha   = 'left'      if val >= 0 else 'right'
+                ax.text(xpos, bar.get_y()+bar.get_height()/2,
+                        f'{val:+.2f}', va='center', ha=ha,
+                        fontsize=8, color='white', fontweight='600')
+            ax.set_xlabel('Log Likelihood Ratio (Disease vs No Disease)', color='#8B949E', fontsize=10)
+            ax.set_title('Naive Bayes — Log Likelihood Ratio per Feature',
+                         color='#E65100', fontweight='bold', fontsize=12, pad=12)
+            ax.tick_params(colors='#C9D1D9', labelsize=9)
+            ax.spines['bottom'].set_color('#30363D')
+            ax.spines['left'].set_color('#30363D')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            fig.tight_layout()
+            st.pyplot(fig); plt.close()
+
+            top3_nb = nb_df.iloc[-3:][::-1]
+            bot3_nb = nb_df.iloc[:3]
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(
+                    "<div style='background:#2D1515 !important;border-left:4px solid #F44336;"
+                    "border-radius:8px;padding:12px 16px'>"
+                    "<div style='color:#FF6B6B !important;font-weight:700;margin-bottom:6px'>"
+                    "🔴 Top 3 — Evidence For Disease</div>" +
+                    "".join([f"<div style='color:#E6EDF3 !important;font-size:0.88rem;padding:2px 0'>"
+                             f"<b>{r['Feature']}</b>: {r['Log Likelihood Ratio']:+.2f}</div>"
+                             for _, r in top3_nb.iterrows()]) +
+                    "</div>", unsafe_allow_html=True)
+            with col_b:
+                st.markdown(
+                    "<div style='background:#0D2016 !important;border-left:4px solid #4CAF50;"
+                    "border-radius:8px;padding:12px 16px'>"
+                    "<div style='color:#56D364 !important;font-weight:700;margin-bottom:6px'>"
+                    "🟢 Top 3 — Evidence Against Disease</div>" +
+                    "".join([f"<div style='color:#E6EDF3 !important;font-size:0.88rem;padding:2px 0'>"
+                             f"<b>{r['Feature']}</b>: {r['Log Likelihood Ratio']:+.2f}</div>"
+                             for _, r in bot3_nb.iterrows()]) +
+                    "</div>", unsafe_allow_html=True)
+
+        # ── Tab 3: KNN — patient vs disease/no-disease mean ───────────────────
+        with inf3:
+            st.markdown(
+                "<p style='color:#C9D1D9 !important;font-size:0.88rem'>"
+                "KNN has no built-in coefficients — it classifies by finding the "
+                "<b>5 nearest patients</b> in the training data. "
+                "This chart compares your patient's values against the "
+                "<b style='color:#FF6B6B'>Disease group mean</b> and "
+                "<b style='color:#56D364'>No Disease group mean</b> "
+                "to show which features are closer to which group.</p>",
+                unsafe_allow_html=True
+            )
+            patient_vals  = patient.values[0]
+            disease_means = df[df['target']==1][feature_names].mean().values
+            healthy_means = df[df['target']==0][feature_names].mean().values
+
+            # Normalise to 0-1 for comparison
+            feat_min = df[feature_names].min().values
+            feat_max = df[feature_names].max().values
+            feat_range = np.where(feat_max - feat_min == 0, 1, feat_max - feat_min)
+
+            p_norm = (patient_vals  - feat_min) / feat_range
+            d_norm = (disease_means - feat_min) / feat_range
+            h_norm = (healthy_means - feat_min) / feat_range
+
+            # Closeness: positive = closer to disease mean
+            closeness = np.abs(p_norm - h_norm) - np.abs(p_norm - d_norm)
+
+            knn_df = pd.DataFrame({
+                'Feature':   [friendly[f] for f in feature_names],
+                'Closeness': closeness
+            }).sort_values('Closeness', ascending=True)
+
+            fig, ax = plt.subplots(figsize=(9, 5))
+            fig.patch.set_facecolor('#161B22')
+            ax.set_facecolor('#161B22')
+            colors = ['#F44336' if v > 0 else '#4CAF50' for v in knn_df['Closeness']]
+            bars = ax.barh(knn_df['Feature'], knn_df['Closeness'],
+                           color=colors, edgecolor='none', height=0.6)
+            ax.axvline(0, color='#8B949E', linewidth=1.2, linestyle='--')
+            for bar, val in zip(bars, knn_df['Closeness']):
+                xpos = val + 0.005 if val >= 0 else val - 0.005
+                ha   = 'left'       if val >= 0 else 'right'
+                ax.text(xpos, bar.get_y()+bar.get_height()/2,
+                        f'{val:+.3f}', va='center', ha=ha,
+                        fontsize=8, color='white', fontweight='600')
+            ax.set_xlabel('Closer to Disease Mean  →  (← Closer to Healthy Mean)',
+                          color='#8B949E', fontsize=9)
+            ax.set_title('KNN — Patient Value vs Disease / Healthy Group Mean',
+                         color='#1565C0', fontweight='bold', fontsize=12, pad=12)
+            ax.tick_params(colors='#C9D1D9', labelsize=9)
+            ax.spines['bottom'].set_color('#30363D')
+            ax.spines['left'].set_color('#30363D')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            fig.tight_layout()
+            st.pyplot(fig); plt.close()
+
+            top3_knn = knn_df.iloc[-3:][::-1]
+            bot3_knn = knn_df.iloc[:3]
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(
+                    "<div style='background:#2D1515 !important;border-left:4px solid #F44336;"
+                    "border-radius:8px;padding:12px 16px'>"
+                    "<div style='color:#FF6B6B !important;font-weight:700;margin-bottom:6px'>"
+                    "🔴 Top 3 — Closest to Disease Group</div>" +
+                    "".join([f"<div style='color:#E6EDF3 !important;font-size:0.88rem;padding:2px 0'>"
+                             f"<b>{r['Feature']}</b>: score {r['Closeness']:+.3f}</div>"
+                             for _, r in top3_knn.iterrows()]) +
+                    "</div>", unsafe_allow_html=True)
+            with col_b:
+                st.markdown(
+                    "<div style='background:#0D2016 !important;border-left:4px solid #4CAF50;"
+                    "border-radius:8px;padding:12px 16px'>"
+                    "<div style='color:#56D364 !important;font-weight:700;margin-bottom:6px'>"
+                    "🟢 Top 3 — Closest to Healthy Group</div>" +
+                    "".join([f"<div style='color:#E6EDF3 !important;font-size:0.88rem;padding:2px 0'>"
+                             f"<b>{r['Feature']}</b>: score {r['Closeness']:+.3f}</div>"
+                             for _, r in bot3_knn.iterrows()]) +
+                    "</div>", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
         st.info("⚠️ This is an educational ML tool only. Always consult a qualified doctor for medical advice.")
 
 
